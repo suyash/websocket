@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/valyala/fasthttp"
 )
 
 var keyGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
@@ -95,8 +97,10 @@ func nextToken(s string) (token, rest string) {
 
 func nextTokenOrQuoted(s string) (value string, rest string) {
 	if !strings.HasPrefix(s, "\"") {
-		return nextToken(s)
+		a, b := nextToken(s)
+		return a, b
 	}
+
 	s = s[1:]
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
@@ -178,7 +182,35 @@ headers:
 	return false
 }
 
-// parseExtensiosn parses WebSocket extensions from a header.
+// tokenListContainsValuefasthttp returns true if the 1#token header with the given
+// name contains a token equal to value with ASCII case folding.
+func tokenListContainsValuefasthttp(header *fasthttp.RequestHeader, name string, value string) bool {
+	ans := false
+	header.VisitAll(func(_, val []byte) {
+		s := string(val)
+		for {
+			var t string
+			t, s = nextToken(skipSpace(s))
+			if t == "" {
+				return
+			}
+			s = skipSpace(s)
+			if s != "" && s[0] != ',' {
+				return
+			}
+			if equalASCIIFold(t, value) {
+				ans = true
+			}
+			if s == "" {
+				return
+			}
+			s = s[1:]
+		}
+	})
+	return ans
+}
+
+// parseExtensions parses WebSocket extensions from a header.
 func parseExtensions(header http.Header) []map[string]string {
 	// From RFC 6455:
 	//
@@ -232,6 +264,50 @@ headers:
 			}
 			s = s[1:]
 		}
+	}
+	return result
+}
+
+// parseExtensionsfasthttp parses WebSocket extensions from a header.
+func parseExtensionsfasthttp(header *fasthttp.RequestHeader) []map[string]string {
+	var result []map[string]string
+	s := string(header.Peek("Sec-Websocket-Extensions"))
+	for {
+		var t string
+		t, s = nextToken(skipSpace(s))
+		if t == "" {
+			break
+		}
+		ext := map[string]string{"": t}
+		for {
+			s = skipSpace(s)
+			if !strings.HasPrefix(s, ";") {
+				break
+			}
+			var k string
+			k, s = nextToken(skipSpace(s[1:]))
+			if k == "" {
+				break
+			}
+			s = skipSpace(s)
+			var v string
+			if strings.HasPrefix(s, "=") {
+				v, s = nextTokenOrQuoted(skipSpace(s[1:]))
+				s = skipSpace(s)
+			}
+			if s != "" && s[0] != ',' && s[0] != ';' {
+				break
+			}
+			ext[k] = v
+		}
+		if s != "" && s[0] != ',' {
+			break
+		}
+		result = append(result, ext)
+		if s == "" {
+			break
+		}
+		s = s[1:]
 	}
 	return result
 }
